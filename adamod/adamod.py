@@ -29,6 +29,8 @@ class AdaMod(Optimizer):
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
         if not 0.0 <= beta3 < 1.0:
             raise ValueError("Invalid beta3 parameter: {}".format(beta3))
+        if not 0.0 <= weight_decay:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
         defaults = dict(lr=lr, betas=betas, beta3=beta3, eps=eps,
                         weight_decay=weight_decay)
         super(AdaMod, self).__init__(params, defaults)
@@ -73,8 +75,8 @@ class AdaMod(Optimizer):
                 state['step'] += 1
 
                 # Decay the first and second moment running average coefficient
-                exp_avg.mul_(beta1).add_(1 - beta1, grad)
-                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                exp_avg.mul_(beta1).add_(grad, alpha=(1 - beta1))
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=(1 - beta2))
 
                 denom = exp_avg_sq.sqrt().add_(group['eps'])
 
@@ -83,15 +85,15 @@ class AdaMod(Optimizer):
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
                 if group['weight_decay'] != 0:
-                    p.data.add_(-group['weight_decay'] * group['lr'], p.data)
+                    p.data.sub_(p.data, alpha=group['weight_decay'] * group['lr'])
 
                 # Applies momental bounds on actual learning rates
                 step_size = torch.full_like(denom, step_size)
                 step_size.div_(denom)
-                exp_avg_lr.mul_(group['beta3']).add_(1 - group['beta3'], step_size)
+                exp_avg_lr.mul_(group['beta3']).add_(step_size, alpha=(1 - group['beta3']))
                 step_size = torch.min(step_size,  exp_avg_lr)
                 step_size.mul_(exp_avg)
 
-                p.data.add_(-step_size)
+                p.data.sub_(step_size)
 
         return loss
