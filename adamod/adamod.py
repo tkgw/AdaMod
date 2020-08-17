@@ -2,6 +2,7 @@ import math
 import torch
 from torch.optim import Optimizer
 
+
 class AdaMod(Optimizer):
     """Implements AdaMod algorithm with Decoupled Weight Decay (arxiv.org/abs/1711.05101)
     It has been proposed in `Adaptive and Momental Bounds for Adaptive Learning Rate Methods`_.
@@ -91,7 +92,7 @@ class AdaMod(Optimizer):
                 step_size = torch.full_like(denom, step_size)
                 step_size.div_(denom)
                 exp_avg_lr.mul_(group['beta3']).add_(step_size, alpha=(1 - group['beta3']))
-                step_size = torch.min(step_size,  exp_avg_lr)
+                step_size = torch.min(step_size, exp_avg_lr)
                 step_size.mul_(exp_avg)
 
                 p.data.sub_(step_size)
