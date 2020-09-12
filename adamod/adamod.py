@@ -15,7 +15,15 @@ class AdaMod(Optimizer):
         beta3 (float, optional): smoothing coefficient for adaptive learning rates (default: 0.9999)
         eps (float, optional): term added to the denominator to improve
             numerical stability (default: 1e-8)
-        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        weight_decay (float, optional): weight decay coefficient (default: 0)
+    .. _Adam\: A Method for Stochastic Optimization:
+        https://arxiv.org/abs/1412.6980
+    .. _Decoupled Weight Decay Regularization:
+        https://arxiv.org/abs/1711.05101
+    .. _On the Convergence of Adam and Beyond:
+        https://openreview.net/forum?id=ryQu7f-RZ
+    .. _An Adaptive and Momental Bound Method for Stochastic Learning:
+        https://arxiv.org/abs/1910.12249
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), beta3=0.999,
@@ -41,6 +49,7 @@ class AdaMod(Optimizer):
 
     def step(self, closure=None):
         """Performs a single optimization step.
+
         Arguments:
             closure (callable, optional): A closure that reevaluates the model
                 and returns the loss.
@@ -55,8 +64,7 @@ class AdaMod(Optimizer):
                     continue
                 grad = p.grad.data
                 if grad.is_sparse:
-                    raise RuntimeError(
-                        'AdaMod does not support sparse gradients')
+                    raise RuntimeError('AdaMod does not support sparse gradients')
 
                 state = self.state[p]
 
@@ -85,15 +93,15 @@ class AdaMod(Optimizer):
                 bias_correction2 = 1 - beta2 ** state['step']
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
-                if group['weight_decay'] != 0:
-                    p.data.sub_(p.data, alpha=group['weight_decay'] * group['lr'])
-
                 # Applies momental bounds on actual learning rates
-                step_size = torch.full_like(denom, step_size)
+                step_size = torch.full_like(denom, fill_value=step_size)
                 step_size.div_(denom)
                 exp_avg_lr.mul_(group['beta3']).add_(step_size, alpha=(1 - group['beta3']))
-                step_size = torch.min(step_size, exp_avg_lr)
+                torch.min(step_size, exp_avg_lr, out=step_size)
                 step_size.mul_(exp_avg)
+
+                if group['weight_decay'] != 0:
+                    step_size.add_(p.data, alpha=group['weight_decay'] * group['lr'])
 
                 p.data.sub_(step_size)
 
