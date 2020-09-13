@@ -47,6 +47,7 @@ class AdaMod(Optimizer):
     def __setstate__(self, state):
         super(AdaMod, self).__setstate__(state)
 
+    @torch.no_grad()
     def step(self, closure=None):
         """Performs a single optimization step.
 
@@ -56,12 +57,15 @@ class AdaMod(Optimizer):
         """
         loss = None
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
 
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
                     continue
+
+                # Perform optimization step
                 grad = p.grad.data
                 if grad.is_sparse:
                     raise RuntimeError('AdaMod does not support sparse gradients')
@@ -86,8 +90,8 @@ class AdaMod(Optimizer):
                 bias_correction2 = 1 - beta2 ** state['step']
 
                 # Decay the first and second moment running average coefficient
-                exp_avg.mul_(beta1).add_(grad, alpha=(1 - beta1))
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=(1 - beta2))
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 # Applies momental bounds on actual learning rates
                 step_size = (group['lr'] / (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(group['eps']))
