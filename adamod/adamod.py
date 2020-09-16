@@ -95,7 +95,7 @@ class AdaMod(Optimizer):
 
                 # Applies momental bounds on actual learning rates
                 step = group['lr'] / exp_avg_sq.div(bias_correction2).sqrt_().add_(group['eps'])
-                exp_avg_lr.mul_(group['beta3']).add_(step, alpha=(1 - group['beta3']))
+                exp_avg_lr.mul_(group['beta3']).add_(step, alpha=1 - group['beta3'])
                 torch.min(step, exp_avg_lr, out=step)
                 step.mul_(exp_avg.div(bias_correction1))
 
