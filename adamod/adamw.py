@@ -3,31 +3,35 @@ import torch
 from torch.optim import Optimizer
 
 
-class AdaMod(Optimizer):
-    """Implements AdaMod algorithm with Decoupled Weight Decay (arxiv.org/abs/1711.05101)
-    It has been proposed in `Adaptive and Momental Bounds for Adaptive Learning Rate Methods`_.
+class AdamW(Optimizer):
+    r"""Implements AdamW algorithm.
+
+    The original Adam algorithm was proposed in `Adam: A Method for Stochastic Optimization`_.
+    The AdamW variant was proposed in `Decoupled Weight Decay Regularization`_.
+
     Arguments:
         params (iterable): iterable of parameters to optimize or dicts defining
             parameter groups
         lr (float, optional): learning rate (default: 1e-3)
         betas (Tuple[float, float], optional): coefficients used for computing
             running averages of gradient and its square (default: (0.9, 0.999))
-        beta3 (float, optional): smoothing coefficient for adaptive learning rates (default: 0.9999)
         eps (float, optional): term added to the denominator to improve
             numerical stability (default: 1e-8)
-        weight_decay (float, optional): weight decay coefficient (default: 0)
+        weight_decay (float, optional): weight decay coefficient (default: 1e-2)
+        amsgrad (boolean, optional): whether to use the AMSGrad variant of this
+            algorithm from the paper `On the Convergence of Adam and Beyond`_
+            (default: False)
+
     .. _Adam\: A Method for Stochastic Optimization:
         https://arxiv.org/abs/1412.6980
     .. _Decoupled Weight Decay Regularization:
         https://arxiv.org/abs/1711.05101
     .. _On the Convergence of Adam and Beyond:
         https://openreview.net/forum?id=ryQu7f-RZ
-    .. _An Adaptive and Momental Bound Method for Stochastic Learning:
-        https://arxiv.org/abs/1910.12249
     """
 
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), beta3=0.999,
-                 eps=1e-8, weight_decay=0):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=1e-2, amsgrad=False):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -36,16 +40,16 @@ class AdaMod(Optimizer):
             raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        if not 0.0 <= beta3 < 1.0:
-            raise ValueError("Invalid beta3 parameter: {}".format(beta3))
         if not 0.0 <= weight_decay:
             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
-        defaults = dict(lr=lr, betas=betas, beta3=beta3, eps=eps,
-                        weight_decay=weight_decay)
-        super(AdaMod, self).__init__(params, defaults)
+        defaults = dict(lr=lr, betas=betas, eps=eps,
+                        weight_decay=weight_decay, amsgrad=amsgrad)
+        super(AdamW, self).__init__(params, defaults)
 
     def __setstate__(self, state):
-        super(AdaMod, self).__setstate__(state)
+        super(AdamW, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsgrad', False)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -66,9 +70,10 @@ class AdaMod(Optimizer):
                     continue
 
                 # Perform optimization step
-                grad = p.grad.data
+                grad = p.grad
                 if grad.is_sparse:
-                    raise RuntimeError('AdaMod does not support sparse gradients')
+                    raise RuntimeError('AdamW does not support sparse gradients')
+                amsgrad = group['amsgrad']
 
                 state = self.state[p]
 
@@ -76,13 +81,16 @@ class AdaMod(Optimizer):
                 if len(state) == 0:
                     state['step'] = 0
                     # Exponential moving average of gradient values
-                    state['exp_avg'] = torch.zeros_like(p.data)
+                    state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
                     # Exponential moving average of squared gradient values
-                    state['exp_avg_sq'] = torch.zeros_like(p.data)
-                    # Exponential moving average of actual learning rates
-                    state['exp_avg_lr'] = torch.zeros_like(p.data)
+                    state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    if amsgrad:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
-                exp_avg, exp_avg_sq, exp_avg_lr = state['exp_avg'], state['exp_avg_sq'], state['exp_avg_lr']
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsgrad:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
                 beta1, beta2 = group['betas']
 
                 state['step'] += 1
@@ -92,16 +100,17 @@ class AdaMod(Optimizer):
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                if amsgrad:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    step = exp_avg.div((max_exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(group['eps']))
+                else:
+                    step = exp_avg.div((exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(group['eps']))
 
-                # Applies momental bounds on actual learning rates
-                step = group['lr'] / exp_avg_sq.div(bias_correction2).sqrt_().add_(group['eps'])
-                exp_avg_lr.mul_(group['beta3']).add_(step, alpha=1 - group['beta3'])
-                torch.min(step, exp_avg_lr, out=step)
-                step.mul_(exp_avg.div(bias_correction1))
-
-                if group['weight_decay'] != 0:
-                    step.add_(p.data, alpha=group['weight_decay'] * group['lr'])
-
-                p.data.sub_(step)
+                step.mul_(-group['lr'] / bias_correction1)
+                step.add_(p, alpha=-group['lr'] * group['weight_decay'])
+                    
+                p.add_(step)
 
         return loss
